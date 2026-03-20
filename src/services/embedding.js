@@ -52,7 +52,7 @@ export async function embedText(text, useCache = true) {
       const response = await axios.post(
         endpoint,
         {
-          model: "text-embedding-3-large",
+          model: "text-embedding-3-small",
           input: processText,
           encoding_format: "float"
         },
