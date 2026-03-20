@@ -10,33 +10,30 @@ import { buildReplyPrompt } from "../utils/prompts.js";
  */
 export async function handleTicketCreatedWebhook(req, res) {
   try {
-    console.log("🔔 Webhook received:", req.body.event_type || "unknown");
+    console.log("🔔 Webhook received:", req.body.type || "unknown");
     
     // Acknowledge webhook immediately (Zendesk expects 200 OK within 10s)
     res.status(200).json({ status: "received" });
 
-    const { data } = req.body;
+    // Extract ticket data from 'detail' field (Zendesk event payload structure)
+    const ticketData = req.body.detail;
     
-    if (!data || !data.id) {
-      console.warn("⚠️ Invalid webhook payload - missing ticket data");
+    if (!ticketData || !ticketData.id) {
+      console.warn("⚠️ Invalid webhook payload - missing ticket detail");
+      console.log("Received payload structure:", Object.keys(req.body));
       return;
     }
 
-    const ticketId = data.id;
-    const subject = data.subject || "";
-    const description = data.description || "";
-    const brand = data.organization_name || "default_brand";
+    const ticketId = ticketData.id;
+    const subject = ticketData.subject || "";
+    const description = ticketData.description || "";
+    const organization_id = ticketData.organization_id || "default_brand";
 
     console.log(`🎫 New ticket webhook received: ID=${ticketId}, Subject="${subject.substring(0, 50)}..."`);
-
-    // Check if ticket already has comments (skip if it does)
-    if (data.comment_count && data.comment_count > 0) {
-      console.log(`⏭️  Skipping ticket ${ticketId} - already has replies`);
-      return;
-    }
+    console.log(`📋 Ticket Details - Priority: ${ticketData.priority}, Status: ${ticketData.status}, Type: ${ticketData.type}`);
 
     // Auto-generate and send reply asynchronously (don't wait)
-    handleAutoReplyAsync(ticketId, subject, description, brand).catch(err => {
+    handleAutoReplyAsync(ticketId, subject, description, organization_id, ticketData).catch(err => {
       console.error(`❌ Async auto-reply failed for ticket ${ticketId}:`, err.message);
     });
 
@@ -49,13 +46,13 @@ export async function handleTicketCreatedWebhook(req, res) {
 /**
  * Asynchronous handler for auto-reply generation and sending
  */
-async function handleAutoReplyAsync(ticketId, subject, description, brand) {
+async function handleAutoReplyAsync(ticketId, subject, description, organization_id, ticketData) {
   try {
     console.log(`⏳ Starting async auto-reply for ticket ${ticketId}...`);
 
     // Step 1: Generate embedding
     const queryEmbedding = await embedText(`${subject} ${description}`);
-    const filter = brand ? { brand: { $eq: brand } } : null;
+    const filter = organization_id ? { organization_id: { $eq: organization_id } } : null;
 
     // Step 2: PHASE 1 - Search manually uploaded KB
     console.log("📚 Searching manual KB for auto-reply...");
