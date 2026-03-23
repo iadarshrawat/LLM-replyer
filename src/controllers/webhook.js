@@ -102,11 +102,13 @@ async function handleAutoReplyAsync(ticketId, subject, description, organization
     const { createZendeskClient } = await import("../config/zendesk.js");
     const zendeskClient = createZendeskClient();
 
-    await zendeskClient.post(`/tickets/${ticketId}/comments`, {
-      comment: {
-        body: replyText,
-        public: true,
-        author_id: -1 // System comment
+    await zendeskClient.put(`/tickets/${ticketId}`, {
+      ticket: {
+        comment: {
+          body: replyText,
+          public: true,
+          author_id: -1 // System comment
+        }
       }
     });
 
@@ -120,11 +122,13 @@ async function handleAutoReplyAsync(ticketId, subject, description, organization
       const { createZendeskClient } = await import("../config/zendesk.js");
       const zendeskClient = createZendeskClient();
       
-      await zendeskClient.post(`/tickets/${ticketId}/comments`, {
-        comment: {
-          body: "⚠️ AI auto-reply generation failed. Please provide a manual response.",
-          public: false, // Internal note
-          author_id: -1
+      await zendeskClient.put(`/tickets/${ticketId}`, {
+        ticket: {
+          comment: {
+            body: "⚠️ AI auto-reply generation failed. Please provide a manual response.",
+            public: false, // Internal note
+            author_id: -1
+          }
         }
       });
     } catch (notificationErr) {

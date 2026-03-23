@@ -229,11 +229,13 @@ export async function sendReply(req, res) {
     const { createZendeskClient } = await import("../config/zendesk.js");
     const zendeskClient = createZendeskClient();
 
-    await zendeskClient.post(`/tickets/${ticketId}/comments`, {
-      comment: {
-        body: replyText,
-        public: true,
-        author_id: -1 // System comment
+    await zendeskClient.put(`/tickets/${ticketId}`, {
+      ticket: {
+        comment: {
+          body: replyText,
+          public: true,
+          author_id: -1 // System comment
+        }
       }
     });
 
