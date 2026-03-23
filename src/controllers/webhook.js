@@ -104,12 +104,11 @@ async function handleAutoReplyAsync(ticketId, subject, description, organization
 
     console.log("this is zendeskClient -> ",zendeskClient);
 
-    await zendeskClient.put(`/tickets/${ticketId}`, {
+    await zendeskClient.put(`/tickets/${ticketId}.json`, {
       ticket: {
         comment: {
           body: replyText,
           public: true,
-          // author_id: -1 // System comment
         }
       }
     });
@@ -124,12 +123,11 @@ async function handleAutoReplyAsync(ticketId, subject, description, organization
       const { createZendeskClient } = await import("../config/zendesk.js");
       const zendeskClient = createZendeskClient();
       
-      await zendeskClient.put(`/tickets/${ticketId}`, {
+      await zendeskClient.put(`/tickets/${ticketId}.json`, {
         ticket: {
           comment: {
             body: "⚠️ AI auto-reply generation failed. Please provide a manual response.",
             public: false, // Internal note
-            author_id: -1
           }
         }
       });
