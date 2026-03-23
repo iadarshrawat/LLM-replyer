@@ -102,12 +102,14 @@ async function handleAutoReplyAsync(ticketId, subject, description, organization
     const { createZendeskClient } = await import("../config/zendesk.js");
     const zendeskClient = createZendeskClient();
 
+    console.log("this is zendeskClient -> ",zendeskClient);
+
     await zendeskClient.put(`/tickets/${ticketId}`, {
       ticket: {
         comment: {
           body: replyText,
           public: true,
-          author_id: -1 // System comment
+          // author_id: -1 // System comment
         }
       }
     });
