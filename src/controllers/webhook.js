@@ -104,6 +104,11 @@ async function handleAutoReplyAsync(ticketId, subject, description, organization
 
     console.log("this is zendeskClient -> ",zendeskClient);
 
+    console.log(`📤 Sending auto-reply to Zendesk ticket ${ticketId}...`);
+// ADD HERE ↓
+console.log("🔗 Full URL:", `https://d3v-itbytes.zendesk.com/api/v2/tickets/${Number(ticketId)}.json`);
+console.log("🎫 Ticket ID:", ticketId, "| type:", typeof ticketId);
+
     await zendeskClient.put(`/tickets/${ticketId}.json`, {
       ticket: {
         comment: {
