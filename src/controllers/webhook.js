@@ -4,6 +4,10 @@ import { queryVectors } from "../config/pinecone.js";
 import { embedText } from "../services/embedding.js";
 import { buildReplyPrompt } from "../utils/prompts.js";
 
+// Bot assignee identifier - change this to match your bot's user ID or name
+const BOT_ASSIGNEE_ID = process.env.BOT_ASSIGNEE_ID || "8447388090494";
+const BOT_ASSIGNEE_NAME = process.env.BOT_ASSIGNEE_NAME || "adarsh";
+
 /**
  * Webhook handler for Zendesk ticket.created events
  * Automatically generates and sends AI reply to new tickets
@@ -40,6 +44,53 @@ export async function handleTicketCreatedWebhook(req, res) {
   } catch (err) {
     console.error("❌ Webhook handler error:", err);
     res.status(500).json({ error: "Webhook processing failed" });
+  }
+}
+
+/**
+ * Webhook handler for Zendesk ticket.comment_added events
+ * Re-replies only if assignee is the bot (adarsh)
+ */
+export async function handleCommentAddedWebhook(req, res) {
+  try {
+    console.log("🔔 Comment webhook received:", req.body.type || "unknown");
+    
+    // Acknowledge webhook immediately (Zendesk expects 200 OK within 10s)
+    res.status(200).json({ status: "received" });
+
+    const ticketData = req.body.detail;
+    
+    if (!ticketData || !ticketData.id) {
+      console.warn("⚠️ Invalid webhook payload - missing ticket detail");
+      return;
+    }
+
+    const ticketId = ticketData.id;
+    const assignee_id = ticketData.assignee_id;
+
+    console.log(`💬 Comment added to ticket ${ticketId}`);
+    console.log(`👤 Assignee ID: ${assignee_id}, Bot ID: ${BOT_ASSIGNEE_ID}`);
+
+    // CHECK: Only proceed if ticket is assigned to the bot
+    if (!assignee_id || assignee_id.toString() !== BOT_ASSIGNEE_ID.toString()) {
+      console.log(`⏭️  Skipping auto-reply - ticket not assigned to bot (adarsh). Assigned to: ${assignee_id}`);
+      return;
+    }
+
+    const subject = ticketData.subject || "";
+    const description = ticketData.description || "";
+    const organization_id = ticketData.organization_id || "default_brand";
+
+    console.log(`✅ Bot is assignee - proceeding with auto-reply for ticket ${ticketId}`);
+
+    // Auto-generate and send reply asynchronously
+    handleAutoReplyAsync(ticketId, subject, description, organization_id, ticketData).catch(err => {
+      console.error(`❌ Async auto-reply failed for ticket ${ticketId}:`, err.message);
+    });
+
+  } catch (err) {
+    console.error("❌ Comment webhook handler error:", err);
+    res.status(500).json({ error: "Comment webhook processing failed" });
   }
 }
 
@@ -171,14 +222,24 @@ export async function getWebhookStatus(req, res) {
   try {
     res.json({
       status: "active",
-      endpoint: "/webhook/ticket-created",
-      events: ["ticket.created"],
-      description: "Automatically generates and sends AI replies to new tickets",
+      endpoints: {
+        ticketCreated: "/webhook/ticket-created",
+        commentAdded: "/webhook/comment-added"
+      },
+      events: ["ticket.created", "ticket.comment_added"],
+      description: "Automatically generates and sends AI replies to new tickets and user responses",
       features: {
-        autoReply: true,
+        autoReplyOnNewTicket: true,
+        conditionalReplyOnComment: true,
+        botAssigneeCheck: true,
         brandIsolation: true,
         kbPrioritization: true,
         errorNotifications: true
+      },
+      botConfig: {
+        botAssigneeId: BOT_ASSIGNEE_ID,
+        botAssigneeName: BOT_ASSIGNEE_NAME,
+        note: "Only replies if ticket is assigned to this bot"
       }
     });
   } catch (err) {
