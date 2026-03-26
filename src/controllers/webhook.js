@@ -8,6 +8,46 @@ import { buildReplyPrompt } from "../utils/prompts.js";
 const BOT_ASSIGNEE_ID = process.env.BOT_ASSIGNEE_ID || "8447388090494";
 const BOT_ASSIGNEE_NAME = process.env.BOT_ASSIGNEE_NAME || "adarsh";
 
+// Track recent bot replies to prevent infinite loops
+// Map: ticketId -> { timestamp, count }
+const recentBotReplies = new Map();
+const REPLY_COOLDOWN_MS = 60000; // 1 minute cooldown between replies
+const MAX_REPLIES_PER_WINDOW = 1; // Max 1 reply per cooldown window
+
+/**
+ * Check if we should reply to prevent loops
+ * Returns true if safe to reply, false if too soon or too many replies
+ */
+function shouldReplyToTicket(ticketId) {
+  const now = Date.now();
+  const recent = recentBotReplies.get(ticketId);
+
+  if (!recent) {
+    // No recent reply, safe to reply
+    recentBotReplies.set(ticketId, { timestamp: now, count: 1 });
+    return true;
+  }
+
+  const timeSinceLastReply = now - recent.timestamp;
+
+  if (timeSinceLastReply > REPLY_COOLDOWN_MS) {
+    // Cooldown expired, reset and allow reply
+    recentBotReplies.set(ticketId, { timestamp: now, count: 1 });
+    return true;
+  }
+
+  if (recent.count >= MAX_REPLIES_PER_WINDOW) {
+    // Already replied max times in this window
+    console.log(`⏸️  Rate limit: Ticket ${ticketId} already replied ${recent.count} times in the last ${timeSinceLastReply}ms`);
+    return false;
+  }
+
+  // Increment count and allow reply
+  recent.count++;
+  console.log(`📊 Reply count for ticket ${ticketId}: ${recent.count}/${MAX_REPLIES_PER_WINDOW}`);
+  return true;
+}
+
 /**
  * Webhook handler for Zendesk ticket.created events
  * Automatically generates and sends AI reply to new tickets
@@ -50,6 +90,7 @@ export async function handleTicketCreatedWebhook(req, res) {
 /**
  * Webhook handler for Zendesk ticket.comment_added events
  * Re-replies only if assignee is the bot (adarsh)
+ * Includes loop prevention to stop infinite replies
  */
 export async function handleCommentAddedWebhook(req, res) {
   try {
@@ -71,9 +112,15 @@ export async function handleCommentAddedWebhook(req, res) {
     console.log(`💬 Comment added to ticket ${ticketId}`);
     console.log(`👤 Assignee ID: ${assignee_id}, Bot ID: ${BOT_ASSIGNEE_ID}`);
 
-    // CHECK: Only proceed if ticket is assigned to the bot
+    // CHECK 1: Only proceed if ticket is assigned to the bot
     if (!assignee_id || assignee_id.toString() !== BOT_ASSIGNEE_ID.toString()) {
-      console.log(`⏭️  Skipping auto-reply - ticket not assigned to bot (adarsh). Assigned to: ${assignee_id}`);
+      console.log(`⏭️  Skipping auto-reply - ticket not assigned to bot. Assigned to: ${assignee_id}`);
+      return;
+    }
+
+    // CHECK 2: Loop prevention - don't reply too frequently
+    if (!shouldReplyToTicket(ticketId)) {
+      console.log(`⏸️  Skipping auto-reply for ticket ${ticketId} - cooldown active to prevent loops`);
       return;
     }
 
@@ -81,7 +128,7 @@ export async function handleCommentAddedWebhook(req, res) {
     const description = ticketData.description || "";
     const organization_id = ticketData.organization_id || "default_brand";
 
-    console.log(`✅ Bot is assignee - proceeding with auto-reply for ticket ${ticketId}`);
+    console.log(`✅ Bot is assignee + cooldown passed - proceeding with auto-reply for ticket ${ticketId}`);
 
     // Auto-generate and send reply asynchronously
     handleAutoReplyAsync(ticketId, subject, description, organization_id, ticketData).catch(err => {
@@ -232,6 +279,7 @@ export async function getWebhookStatus(req, res) {
         autoReplyOnNewTicket: true,
         conditionalReplyOnComment: true,
         botAssigneeCheck: true,
+        loopPrevention: true,
         brandIsolation: true,
         kbPrioritization: true,
         errorNotifications: true
@@ -239,7 +287,14 @@ export async function getWebhookStatus(req, res) {
       botConfig: {
         botAssigneeId: BOT_ASSIGNEE_ID,
         botAssigneeName: BOT_ASSIGNEE_NAME,
-        note: "Only replies if ticket is assigned to this bot"
+        replyCooldownMs: REPLY_COOLDOWN_MS,
+        maxRepliesPerWindow: MAX_REPLIES_PER_WINDOW,
+        note: "Only replies if ticket is assigned to bot, with rate limiting to prevent loops"
+      },
+      loopPrevention: {
+        description: "Prevents infinite reply loops by tracking recent replies",
+        cooldownWindow: `${REPLY_COOLDOWN_MS}ms (${REPLY_COOLDOWN_MS / 1000}s)`,
+        maxReplies: `${MAX_REPLIES_PER_WINDOW} reply per cooldown window`
       }
     });
   } catch (err) {
