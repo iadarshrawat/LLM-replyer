@@ -244,22 +244,41 @@ export async function handleCommentAddedWebhook(req, res) {
     if (survey && survey.surveyPending) {
       console.log(`📊 Processing satisfaction survey response for ticket ${ticketId}`);
       const sentiment = detectCustomerSentiment(description);
+      console.log(`💭 Survey response sentiment: ${sentiment}`);
 
       if (sentiment === 'satisfied') {
         console.log(`✅ Customer confirmed satisfaction - closing ticket`);
         await handleTicketClosure(ticketId);
-        return;
+        return; // STOP HERE - Don't send any more replies
       }
 
       if (sentiment === 'not_satisfied') {
         console.log(`❌ Customer confirmed dissatisfaction - reassigning ticket`);
         await handleTicketReassignment(ticketId);
-        return;
+        return; // STOP HERE - Don't send any more replies
       }
 
       if (sentiment === 'arguing') {
         console.log(`🔥 Customer arguing in survey response - continue with bot reply`);
         surveyTracker.delete(ticketId); // Clear survey state and proceed with reply
+        // CONTINUE BELOW to generate reply
+      } else {
+        // Neutral or unclear response to survey - ask again
+        console.log(`❓ Unclear response to survey for ticket ${ticketId} - sending survey again`);
+        const { createZendeskClient } = await import("../config/zendesk.js");
+        const zendeskClient = createZendeskClient();
+        
+        const surveyQuestion = `\n\n---\n\n**We didn't quite understand your response.** 😊\n\nPlease let us know:\n- Reply "yes" if this solved your issue\n- Reply "no" if you need further help\n\nThank you!`;
+
+        await zendeskClient.put(`/tickets/${ticketId}.json`, {
+          ticket: {
+            comment: {
+              body: surveyQuestion,
+              public: true,
+            }
+          }
+        });
+        return; // STOP HERE
       }
     }
 
@@ -287,33 +306,11 @@ export async function handleCommentAddedWebhook(req, res) {
 
 /**
  * Asynchronous handler for auto-reply generation and sending
- * Also handles satisfaction survey and post-reply actions
+ * Generates AI reply and sends satisfaction survey
  */
 async function handleAutoReplyAsync(ticketId, subject, description, organization_id, ticketData) {
   try {
     console.log(`⏳ Starting async auto-reply for ticket ${ticketId}...`);
-
-    // Step 0: Check customer sentiment from their message
-    const customerSentiment = detectCustomerSentiment(description);
-    console.log(`💭 Customer sentiment detected: ${customerSentiment}`);
-
-    // SENTIMENT ACTIONS
-    if (customerSentiment === 'satisfied') {
-      console.log(`✅ Customer satisfied - attempting to close ticket ${ticketId}`);
-      await handleTicketClosure(ticketId);
-      return;
-    }
-
-    if (customerSentiment === 'not_satisfied') {
-      console.log(`❌ Customer not satisfied - attempting to reassign ticket ${ticketId}`);
-      await handleTicketReassignment(ticketId);
-      return;
-    }
-
-    if (customerSentiment === 'arguing') {
-      console.log(`🔥 Customer arguing - continuing with bot reply for ticket ${ticketId}`);
-      // Continue with normal reply
-    }
 
     // Step 1: Generate embedding
     const queryEmbedding = await embedText(`${subject} ${description}`);
@@ -378,7 +375,7 @@ async function handleAutoReplyAsync(ticketId, subject, description, organization
 
     console.log(`✅ Auto-reply successfully sent to ticket ${ticketId}`);
 
-    // Step 6: Send satisfaction survey question
+    // Step 6: Send satisfaction survey question (ONLY after successful reply)
     console.log(`❓ Sending satisfaction survey for ticket ${ticketId}...`);
     const surveyQuestion = `\n\n---\n\n**Are you satisfied with this response?** 😊\n\nPlease let us know:\n- Reply "yes" if this solved your issue\n- Reply "no" if you need further help\n- Feel free to share any feedback\n\nThank you for your patience!`;
 
@@ -392,7 +389,10 @@ async function handleAutoReplyAsync(ticketId, subject, description, organization
     });
 
     console.log(`✅ Satisfaction survey sent for ticket ${ticketId}`);
+    
+    // Mark survey as pending (IMPORTANT: This enables survey response processing)
     surveyTracker.set(ticketId, { surveyPending: true, lastReplyTime: Date.now() });
+    console.log(`📊 Survey marked as PENDING for ticket ${ticketId}`);
 
   } catch (err) {
     console.error(`❌ Auto-reply generation failed for ticket ${ticketId}:`, err.message);
