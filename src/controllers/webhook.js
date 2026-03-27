@@ -14,6 +14,63 @@ const recentBotReplies = new Map();
 const REPLY_COOLDOWN_MS = 60000; // 1 minute cooldown between replies
 const MAX_REPLIES_PER_WINDOW = 1; // Max 1 reply per cooldown window
 
+// Track satisfaction survey state
+// Map: ticketId -> { surveyPending, lastReplyTime }
+const surveyTracker = new Map();
+
+// Available agents to reassign to (excluding the bot)
+const AVAILABLE_AGENTS = process.env.AVAILABLE_AGENTS 
+  ? process.env.AVAILABLE_AGENTS.split(',') 
+  : ["8447388090495", "8447388090496"]; // Fallback agent IDs
+
+/**
+ * Detect customer sentiment and satisfaction status from their message
+ * Returns: 'satisfied' | 'not_satisfied' | 'arguing' | 'neutral'
+ */
+function detectCustomerSentiment(message) {
+  if (!message) return 'neutral';
+  
+  const lowerMsg = message.toLowerCase();
+  
+  // Satisfaction keywords (positive)
+  const satisfiedKeywords = [
+    'yes', 'great', 'perfect', 'excellent', 'thank', 'thanks', 'helpful', 'works',
+    'solved', 'fixed', 'good', 'appreciate', 'awesome', 'wonderful', 'brilliant'
+  ];
+  
+  // Dissatisfaction keywords (negative)
+  const dissatisfiedKeywords = [
+    'no', 'not satisfied', 'unsatisfied', 'unhappy', 'bad', 'terrible', 'waste',
+    'useless', 'didn\'t help', 'didn\'t work', 'disappointed', 'frustrated', 'angry'
+  ];
+  
+  // Arguing keywords
+  const arguingKeywords = [
+    'but', 'however', 'disagree', 'wrong', 'incorrect', 'not true', 'not right',
+    'that\'s not', 'you\'re wrong', 'that doesn\'t', 'doesn\'t work', 'problem',
+    'issue', 'broken', 'error', 'failed', 'why', 'explain'
+  ];
+  
+  // Check for satisfaction
+  const satisfiedCount = satisfiedKeywords.filter(kw => lowerMsg.includes(kw)).length;
+  const dissatisfiedCount = dissatisfiedKeywords.filter(kw => lowerMsg.includes(kw)).length;
+  const arguingCount = arguingKeywords.filter(kw => lowerMsg.includes(kw)).length;
+  
+  if (satisfiedCount > dissatisfiedCount && satisfiedCount > arguingCount && satisfiedCount > 0) {
+    return 'satisfied';
+  }
+  
+  if (dissatisfiedCount > satisfiedCount && dissatisfiedCount > arguingCount && dissatisfiedCount > 0) {
+    return 'not_satisfied';
+  }
+  
+  if (arguingCount > 0) {
+    return 'arguing';
+  }
+  
+  return 'neutral';
+}
+
 /**
  * Check if we should reply to prevent loops
  * Returns true if safe to reply, false if too soon or too many replies
@@ -46,6 +103,68 @@ function shouldReplyToTicket(ticketId) {
   recent.count++;
   console.log(`📊 Reply count for ticket ${ticketId}: ${recent.count}/${MAX_REPLIES_PER_WINDOW}`);
   return true;
+}
+
+/**
+ * Close a ticket when customer is satisfied
+ */
+async function handleTicketClosure(ticketId) {
+  try {
+    console.log(`🔐 Closing satisfied ticket ${ticketId}...`);
+    const { createZendeskClient } = await import("../config/zendesk.js");
+    const zendeskClient = createZendeskClient();
+
+    // Add closing comment
+    const closingMessage = `✅ **Ticket Closed**\n\nThank you for your feedback! We're glad we could help. If you need further assistance in the future, feel free to create a new ticket.\n\n*Closed by AI Support Bot*`;
+
+    await zendeskClient.put(`/tickets/${ticketId}.json`, {
+      ticket: {
+        status: "closed",
+        comment: {
+          body: closingMessage,
+          public: true,
+        }
+      }
+    });
+
+    console.log(`✅ Ticket ${ticketId} closed successfully`);
+    surveyTracker.delete(ticketId);
+
+  } catch (err) {
+    console.error(`❌ Failed to close ticket ${ticketId}:`, err.message);
+  }
+}
+
+/**
+ * Reassign a ticket to another agent when customer is not satisfied
+ */
+async function handleTicketReassignment(ticketId) {
+  try {
+    console.log(`🔄 Reassigning unsatisfied ticket ${ticketId}...`);
+    const { createZendeskClient } = await import("../config/zendesk.js");
+    const zendeskClient = createZendeskClient();
+
+    // Pick a random agent from available agents
+    const randomAgent = AVAILABLE_AGENTS[Math.floor(Math.random() * AVAILABLE_AGENTS.length)];
+    
+    const reassignmentMessage = `ℹ️ **Ticket Reassigned**\n\nWe understand you're still having issues. We're transferring your ticket to one of our specialist agents who can provide more personalized assistance.\n\nThey will be with you shortly. Thank you for your patience!\n\n*Escalated by AI Support Bot*`;
+
+    await zendeskClient.put(`/tickets/${ticketId}.json`, {
+      ticket: {
+        assignee_id: randomAgent,
+        comment: {
+          body: reassignmentMessage,
+          public: true,
+        }
+      }
+    });
+
+    console.log(`✅ Ticket ${ticketId} reassigned to agent ${randomAgent}`);
+    surveyTracker.delete(ticketId);
+
+  } catch (err) {
+    console.error(`❌ Failed to reassign ticket ${ticketId}:`, err.message);
+  }
 }
 
 /**
@@ -91,6 +210,7 @@ export async function handleTicketCreatedWebhook(req, res) {
  * Webhook handler for Zendesk ticket.comment_added events
  * Re-replies only if assignee is the bot (adarsh)
  * Includes loop prevention to stop infinite replies
+ * Also handles satisfaction survey responses
  */
 export async function handleCommentAddedWebhook(req, res) {
   try {
@@ -108,6 +228,7 @@ export async function handleCommentAddedWebhook(req, res) {
 
     const ticketId = ticketData.id;
     const assignee_id = ticketData.assignee_id;
+    const description = ticketData.description || "";
 
     console.log(`💬 Comment added to ticket ${ticketId}`);
     console.log(`👤 Assignee ID: ${assignee_id}, Bot ID: ${BOT_ASSIGNEE_ID}`);
@@ -118,14 +239,37 @@ export async function handleCommentAddedWebhook(req, res) {
       return;
     }
 
-    // CHECK 2: Loop prevention - don't reply too frequently
+    // CHECK 2: Check if this is a satisfaction survey response
+    const survey = surveyTracker.get(ticketId);
+    if (survey && survey.surveyPending) {
+      console.log(`📊 Processing satisfaction survey response for ticket ${ticketId}`);
+      const sentiment = detectCustomerSentiment(description);
+
+      if (sentiment === 'satisfied') {
+        console.log(`✅ Customer confirmed satisfaction - closing ticket`);
+        await handleTicketClosure(ticketId);
+        return;
+      }
+
+      if (sentiment === 'not_satisfied') {
+        console.log(`❌ Customer confirmed dissatisfaction - reassigning ticket`);
+        await handleTicketReassignment(ticketId);
+        return;
+      }
+
+      if (sentiment === 'arguing') {
+        console.log(`🔥 Customer arguing in survey response - continue with bot reply`);
+        surveyTracker.delete(ticketId); // Clear survey state and proceed with reply
+      }
+    }
+
+    // CHECK 3: Loop prevention - don't reply too frequently
     if (!shouldReplyToTicket(ticketId)) {
       console.log(`⏸️  Skipping auto-reply for ticket ${ticketId} - cooldown active to prevent loops`);
       return;
     }
 
     const subject = ticketData.subject || "";
-    const description = ticketData.description || "";
     const organization_id = ticketData.organization_id || "default_brand";
 
     console.log(`✅ Bot is assignee + cooldown passed - proceeding with auto-reply for ticket ${ticketId}`);
@@ -143,10 +287,33 @@ export async function handleCommentAddedWebhook(req, res) {
 
 /**
  * Asynchronous handler for auto-reply generation and sending
+ * Also handles satisfaction survey and post-reply actions
  */
 async function handleAutoReplyAsync(ticketId, subject, description, organization_id, ticketData) {
   try {
     console.log(`⏳ Starting async auto-reply for ticket ${ticketId}...`);
+
+    // Step 0: Check customer sentiment from their message
+    const customerSentiment = detectCustomerSentiment(description);
+    console.log(`💭 Customer sentiment detected: ${customerSentiment}`);
+
+    // SENTIMENT ACTIONS
+    if (customerSentiment === 'satisfied') {
+      console.log(`✅ Customer satisfied - attempting to close ticket ${ticketId}`);
+      await handleTicketClosure(ticketId);
+      return;
+    }
+
+    if (customerSentiment === 'not_satisfied') {
+      console.log(`❌ Customer not satisfied - attempting to reassign ticket ${ticketId}`);
+      await handleTicketReassignment(ticketId);
+      return;
+    }
+
+    if (customerSentiment === 'arguing') {
+      console.log(`🔥 Customer arguing - continuing with bot reply for ticket ${ticketId}`);
+      // Continue with normal reply
+    }
 
     // Step 1: Generate embedding
     const queryEmbedding = await embedText(`${subject} ${description}`);
@@ -200,13 +367,6 @@ async function handleAutoReplyAsync(ticketId, subject, description, organization
     const { createZendeskClient } = await import("../config/zendesk.js");
     const zendeskClient = createZendeskClient();
 
-    console.log("this is zendeskClient -> ",zendeskClient);
-
-    console.log(`📤 Sending auto-reply to Zendesk ticket ${ticketId}...`);
-// ADD HERE ↓
-console.log("🔗 Full URL:", `https://d3v-itbytes.zendesk.com/api/v2/tickets/${Number(ticketId)}.json`);
-console.log("🎫 Ticket ID:", ticketId, "| type:", typeof ticketId);
-
     await zendeskClient.put(`/tickets/${ticketId}.json`, {
       ticket: {
         comment: {
@@ -217,6 +377,22 @@ console.log("🎫 Ticket ID:", ticketId, "| type:", typeof ticketId);
     });
 
     console.log(`✅ Auto-reply successfully sent to ticket ${ticketId}`);
+
+    // Step 6: Send satisfaction survey question
+    console.log(`❓ Sending satisfaction survey for ticket ${ticketId}...`);
+    const surveyQuestion = `\n\n---\n\n**Are you satisfied with this response?** 😊\n\nPlease let us know:\n- Reply "yes" if this solved your issue\n- Reply "no" if you need further help\n- Feel free to share any feedback\n\nThank you for your patience!`;
+
+    await zendeskClient.put(`/tickets/${ticketId}.json`, {
+      ticket: {
+        comment: {
+          body: surveyQuestion,
+          public: true,
+        }
+      }
+    });
+
+    console.log(`✅ Satisfaction survey sent for ticket ${ticketId}`);
+    surveyTracker.set(ticketId, { surveyPending: true, lastReplyTime: Date.now() });
 
   } catch (err) {
     console.error(`❌ Auto-reply generation failed for ticket ${ticketId}:`, err.message);
@@ -274,12 +450,17 @@ export async function getWebhookStatus(req, res) {
         commentAdded: "/webhook/comment-added"
       },
       events: ["ticket.created", "ticket.comment_added"],
-      description: "Automatically generates and sends AI replies to new tickets and user responses",
+      description: "Automatically generates and sends AI replies with satisfaction survey and smart ticket management",
       features: {
         autoReplyOnNewTicket: true,
         conditionalReplyOnComment: true,
         botAssigneeCheck: true,
         loopPrevention: true,
+        satisfactionSurvey: true,
+        ticketClosure: true,
+        ticketReassignment: true,
+        sentimentDetection: true,
+        arguementHandling: true,
         brandIsolation: true,
         kbPrioritization: true,
         errorNotifications: true
@@ -289,7 +470,14 @@ export async function getWebhookStatus(req, res) {
         botAssigneeName: BOT_ASSIGNEE_NAME,
         replyCooldownMs: REPLY_COOLDOWN_MS,
         maxRepliesPerWindow: MAX_REPLIES_PER_WINDOW,
-        note: "Only replies if ticket is assigned to bot, with rate limiting to prevent loops"
+        availableAgents: AVAILABLE_AGENTS,
+        note: "Only replies if ticket is assigned to bot, with satisfaction survey"
+      },
+      workflow: {
+        step1: "New ticket → Generate AI reply + send satisfaction survey",
+        step2: "Customer responds with YES → Close ticket",
+        step3: "Customer responds with NO → Reassign to human agent",
+        step4: "Customer argues → Continue with AI reply"
       },
       loopPrevention: {
         description: "Prevents infinite reply loops by tracking recent replies",
