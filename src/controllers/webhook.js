@@ -117,9 +117,10 @@ async function handleTicketClosure(ticketId) {
     // Add closing comment
     const closingMessage = `✅ **Ticket Closed**\n\nThank you for your feedback! We're glad we could help. If you need further assistance in the future, feel free to create a new ticket.\n\n*Closed by AI Support Bot*`;
 
+    // ✅ BUG FIX #3: Use "solved" status, not "closed" (Zendesk workflow)
     await zendeskClient.put(`/tickets/${ticketId}.json`, {
       ticket: {
-        status: "closed",
+        status: "solved",
         comment: {
           body: closingMessage,
           public: true,
@@ -149,9 +150,10 @@ async function handleTicketReassignment(ticketId) {
     
     const reassignmentMessage = `ℹ️ **Ticket Reassigned**\n\nWe understand you're still having issues. We're transferring your ticket to one of our specialist agents who can provide more personalized assistance.\n\nThey will be with you shortly. Thank you for your patience!\n\n*Escalated by AI Support Bot*`;
 
+    // ✅ BUG FIX #4: Convert agent ID to number - Zendesk expects integer, not string
     await zendeskClient.put(`/tickets/${ticketId}.json`, {
       ticket: {
-        assignee_id: randomAgent,
+        assignee_id: parseInt(randomAgent, 10),
         comment: {
           body: reassignmentMessage,
           public: true,
@@ -228,10 +230,18 @@ export async function handleCommentAddedWebhook(req, res) {
 
     const ticketId = ticketData.id;
     const assignee_id = ticketData.assignee_id;
-    const description = ticketData.description || "";
+    // ✅ BUG FIX #1: Use latest comment body, not original ticket description
+    const description = ticketData.latest_comment?.body || ticketData.comment?.body || ticketData.description || "";
 
     console.log(`💬 Comment added to ticket ${ticketId}`);
     console.log(`👤 Assignee ID: ${assignee_id}, Bot ID: ${BOT_ASSIGNEE_ID}`);
+
+    // ✅ BUG FIX #5: Check if comment was authored by the bot itself - skip immediately
+    const commentAuthorId = ticketData.latest_comment?.author_id;
+    if (commentAuthorId?.toString() === BOT_ASSIGNEE_ID.toString()) {
+      console.log("⏭️ Skipping - comment was authored by the bot itself");
+      return;
+    }
 
     // CHECK 1: Only proceed if ticket is assigned to the bot
     if (!assignee_id || assignee_id.toString() !== BOT_ASSIGNEE_ID.toString()) {
@@ -377,6 +387,11 @@ async function handleAutoReplyAsync(ticketId, subject, description, organization
 
     // Step 6: Send satisfaction survey question (ONLY after successful reply)
     console.log(`❓ Sending satisfaction survey for ticket ${ticketId}...`);
+    
+    // ✅ BUG FIX #2: Set tracker BEFORE sending, not after, to prevent race condition
+    surveyTracker.set(ticketId, { surveyPending: true, lastReplyTime: Date.now() });
+    console.log(`📊 Survey marked as PENDING for ticket ${ticketId}`);
+    
     const surveyQuestion = `\n\n---\n\n**Are you satisfied with this response?** 😊\n\nPlease let us know:\n- Reply "yes" if this solved your issue\n- Reply "no" if you need further help\n- Feel free to share any feedback\n\nThank you for your patience!`;
 
     await zendeskClient.put(`/tickets/${ticketId}.json`, {
@@ -389,10 +404,6 @@ async function handleAutoReplyAsync(ticketId, subject, description, organization
     });
 
     console.log(`✅ Satisfaction survey sent for ticket ${ticketId}`);
-    
-    // Mark survey as pending (IMPORTANT: This enables survey response processing)
-    surveyTracker.set(ticketId, { surveyPending: true, lastReplyTime: Date.now() });
-    console.log(`📊 Survey marked as PENDING for ticket ${ticketId}`);
 
   } catch (err) {
     console.error(`❌ Auto-reply generation failed for ticket ${ticketId}:`, err.message);
