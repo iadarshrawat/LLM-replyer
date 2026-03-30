@@ -92,13 +92,15 @@ export async function handleSunshineMessage(req, res) {
     if (messageEmbedding) {
       try {
         // PHASE 1: Search manually uploaded KB with higher threshold (0.7)
+        // ✅ FIX: Correct queryVectors parameter order: (vector, topK, includeMetadata, filter)
         const phase1Results = await queryVectors(
           messageEmbedding,
           10,
-          { source: "manual_upload", brand: brand }
+          true,  // includeMetadata
+          { source: { $eq: "manual_upload" } }  // filter with proper Pinecone syntax
         );
 
-        const phase1Filtered = phase1Results.filter(r => r.score >= 0.7);
+        const phase1Filtered = phase1Results.matches?.filter(r => r.score >= 0.7) || [];
 
         if (phase1Filtered.length > 0) {
           searchResults = phase1Filtered;
@@ -109,10 +111,11 @@ export async function handleSunshineMessage(req, res) {
           const phase2Results = await queryVectors(
             messageEmbedding,
             10,
-            { source: "ticket_chat", brand: brand }
+            true,  // includeMetadata
+            { source: { $eq: "ticket_chat" } }  // filter with proper Pinecone syntax
           );
 
-          const phase2Filtered = phase2Results.filter(r => r.score >= 0.6);
+          const phase2Filtered = phase2Results.matches?.filter(r => r.score >= 0.6) || [];
           if (phase2Filtered.length > 0) {
             searchResults = phase2Filtered;
             console.log(`✅ PHASE 2 (Ticket Chat) found ${phase2Filtered.length} results`);
