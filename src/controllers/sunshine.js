@@ -33,43 +33,53 @@ function createSunshineClient() {
 /**
  * Handle incoming message from Sunshine Conversations webhook
  * Called when a customer sends a message via web widget/Zendesk channel
+ * 
+ * Payload structure from Zendesk:
+ * {
+ *   "account_id": 21825834,
+ *   "detail": { "id": "141" },
+ *   "event": {
+ *     "actor": { "id": "...", "name": "...", "type": "..." },
+ *     "conversation_id": "...",
+ *     "message": { "body": "...", "id": "..." }
+ *   },
+ *   "id": "...",
+ *   "subject": "zen:ticket:141",
+ *   "type": "zen:event-type:messaging_ticket.message_added"
+ * }
  */
 export async function handleSunshineMessage(req, res) {
   try {
     console.log("📨 Sunshine message received:", JSON.stringify(req.body, null, 2));
 
-    const { user, messages } = req.body;
+    const { event, detail } = req.body;
 
-    if (!user || !messages || messages.length === 0) {
+    // ✅ Parse Zendesk Sunshine webhook payload
+    if (!event || !event.message || !event.conversation_id) {
+      console.error("❌ Missing required fields in payload:", { 
+        hasEvent: !!event, 
+        hasMessage: !!event?.message, 
+        hasConversationId: !!event?.conversation_id 
+      });
       return res.status(400).json({ error: "Invalid payload structure" });
     }
 
-    // Get the latest customer message
-    const latestMessage = messages[messages.length - 1];
-    const { id: messageId, text, authorId } = latestMessage;
+    // Extract message details
+    const messageBody = event.message.body;
+    const messageId = event.message.id;
+    const conversationId = event.conversation_id;
+    const ticketId = detail?.id || "unknown";
+    const actorName = event.actor?.name || "Guest";
+    const actorId = event.actor?.id || "unknown";
+    const brand = "default_brand"; // Default brand
 
-    const userId = user.id;
-    const userName = user.name || "Guest";
-    const userEmail = user.email || "unknown@example.com";
-    const brand = req.body.brand || "default_brand";
-
-    console.log(`💬 Processing message from ${userName}: "${text}"`);
-
-    // Extract conversation ID from the webhook payload
-    let conversationId = req.body.conversationId;
-
-    if (!conversationId && req.body.conversation) {
-      conversationId = req.body.conversation.id;
-    }
-
-    if (!conversationId) {
-      return res.status(400).json({ error: "conversationId not found in payload" });
-    }
+    console.log(`💬 Processing message from ${actorName}: "${messageBody.substring(0, 50)}..."`);
+    console.log(`🎫 Ticket ID: ${ticketId}, Conversation: ${conversationId}`);
 
     // Step 1: Generate embedding for the customer message
     let messageEmbedding;
     try {
-      messageEmbedding = await embedText(text);
+      messageEmbedding = await embedText(messageBody);
     } catch (err) {
       console.error("❌ Embedding error:", err.message);
       messageEmbedding = null;
@@ -119,7 +129,7 @@ export async function handleSunshineMessage(req, res) {
     // Step 3: Generate reply using OpenAI
     let botReply;
     try {
-      const prompt = buildReplyPrompt(text, selectedArticles, brand);
+      const prompt = buildReplyPrompt(messageBody, selectedArticles, brand);
       botReply = await generateContent(prompt);
     } catch (err) {
       console.error("❌ OpenAI generation error:", err.message);
