@@ -8,6 +8,8 @@ import navbarRoutes from "./src/routes/navbar.route.js";
 import sidebarRoutes from "./src/routes/sidebar.route.js";
 import editorRoutes from "./src/routes/editor.route.js";
 import webhookRoutes from "./src/routes/webhook.route.js";
+import chatbotRoutes from "./src/routes/chatbot.route.js";
+import sunshineRoutes from "./src/routes/sunshine.route.js";
 
 dotenv.config();
 
@@ -32,6 +34,12 @@ app.use(editorRoutes);
 
 // Webhook routes (Auto-reply on new tickets)
 app.use("/webhook", webhookRoutes);
+
+// Chatbot routes (Web widget - no tickets)
+app.use(chatbotRoutes);
+
+// Sunshine Conversations routes (Zendesk native - no tickets)
+app.use(sunshineRoutes);
 
 /* ================= UTILITY ENDPOINTS ================= */
 
@@ -177,6 +185,18 @@ async function startServer() {
       console.log(`  POST   /webhook/ticket-created      - Zendesk webhook for new tickets (auto-reply)`);
       console.log(`  POST   /webhook/events             - General webhook event handler`);
       console.log(`  GET    /webhook/status             - Get webhook status`);
+      console.log(`\n🔹 CHATBOT (Web Widget - No Tickets):`);
+      console.log(`  POST   /chat/init                  - Initialize new conversation`);
+      console.log(`  POST   /chat/message               - Send message and get bot reply`);
+      console.log(`  GET    /chat/history/:sessionId    - Get conversation history`);
+      console.log(`  POST   /chat/end                   - End conversation`);
+      console.log(`  GET    /chat/stats                 - Get chatbot statistics`);
+      console.log(`\n🔹 SUNSHINE CONVERSATIONS (Zendesk Native - No Tickets):`);
+      console.log(`  POST   /sunshine/webhook                    - Incoming webhook from Zendesk`);
+      console.log(`  GET    /sunshine/conversation/:conversationId - Get conversation details`);
+      console.log(`  GET    /sunshine/history/:conversationId    - Get conversation history`);
+      console.log(`  GET    /sunshine/status                     - Check Sunshine API connection`);
+      console.log(`  POST   /sunshine/configure-webhook          - Configure webhook URL`);
       console.log(`\n🔹 UTILITY:`);
       console.log(`  GET    /health               - Health check`);
       console.log(`  DELETE /force-delete-index   - Force delete Pinecone index`);
